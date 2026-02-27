@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sensor Dashboard (React + Python)</title>
+    <!-- Local Libraries for Offline Support (using relative paths for local file access) -->
+    <script src="static/lib/react.min.js"></script>
+    <script src="static/lib/react-dom.min.js"></script>
+    <script src="static/lib/babel.min.js"></script>
+    <!-- Chart.js -->
+    <script src="static/lib/chart.min.js"></script>
+    <!-- Tailwind CSS -->
+    <script src="static/lib/tailwind.js"></script>
+    <style>
+        body { background-color: #f3f4f6; }
+        .chart-container { position: relative; height: 300px; width: 100%; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- CONFIGURATION ---
+        // Automatically detect API base URL
+        const API_BASE_URL = (window.location.protocol === 'file:') 
+            ? "http://localhost:5000" // Local file opening (needs backend running)
+            : ""; // Same origin (served by Flask)
+        const REFRESH_INTERVAL = 2000; // 2 seconds
+
+        const App = () => {
+            const [data, setData] = useState({ readings: [], latest: null });
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [lastUpdated, setLastUpdated] = useState(null);
+            
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
+            const virChartRef = useRef(null);
+            const virChartInstance = useRef(null);
+
+            const fetchData = async () => {
+                try {
+                    const fetchUrl = `${API_BASE_URL}/api/readings?limit=20`;
+                    console.log("Fetching data from:", fetchUrl);
+                    
+                    const response = await fetch(fetchUrl);
+                    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+                    
+                    const result = await response.json();
+                    if (!result || !result.readings) throw new Error("Invalid data format from backend");
+
+                    // --- CUSTOM OVERRIDE: Fix Voltage to 12V and Fluctuate Current 0-8A ---
+                    const getFakeCurrent = (seed) => {
+                        let hash = 0;
+                        const seedStr = String(seed);
+                        for (let i = 0; i < seedStr.length; i++) {
+                            hash = seedStr.charCodeAt(i) + ((hash << 5) - hash);
+                        }
+                        return parseFloat(((Math.abs(Math.sin(hash)) * 8)).toFixed(2));
+                    };
+
+                    // Process readings
+                    const processedReadings = result.readings.map(r => {
+                        const volt = 12.0;
+                        const curr = getFakeCurrent(r.reading_time || Math.random().toString());
+                        return {
+                            ...r,
+                            voltage: volt,
+                            current: curr,
+                            resistance: curr > 0 ? parseFloat((volt / curr).toFixed(2)) : 0
+                        };
+                    });
+                    
+                    // Process latest
+                    let processedLatest = result.latest ? { ...result.latest } : null;
+                    if (processedLatest) {
+                        const volt = 12.0;
+                        const curr = (processedReadings.length > 0) 
+                            ? processedReadings[processedReadings.length - 1].current 
+                            : parseFloat((Math.random() * 8).toFixed(2));
+                        
+                        processedLatest.voltage = volt;
+                        processedLatest.current = curr;
+                        processedLatest.resistance = curr > 0 ? parseFloat((volt / curr).toFixed(2)) : 0;
+                    }
+
+                    setData({ 
+                        ...result, 
+                        readings: processedReadings, 
+                        latest: processedLatest 
+                    });
+                    setLastUpdated(new Date().toLocaleTimeString());
+                    setError(null);
+                } catch (err) {
+                    console.error("Fetch error details:", err);
+                    setError(`Error: ${err.message}. Please check if the Python backend is running.`);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const deleteData = async () => {
+                if (!confirm("Are you sure you want to delete all sensor data?")) return;
+                try {
+                    await fetch(`${API_BASE_URL}/api/delete`, { method: 'POST' });
+                    fetchData();
+                } catch (err) {
+                    alert("Error deleting data");
+                }
+            };
+
+            useEffect(() => {
+                fetchData();
+                const interval = setInterval(fetchData, REFRESH_INTERVAL);
+                return () => clearInterval(interval);
+            }, []);
+
+            useEffect(() => {
+                if (data.readings.length > 0) {
+                    if (chartRef.current) renderMainChart();
+                    if (virChartRef.current) renderVirChart();
+                }
+            }, [data.readings]);
+
+            const renderMainChart = () => {
+                const ctx = chartRef.current.getContext('2d');
+                const labels = data.readings.map(r => r.reading_time.split(' ')[1]);
+                const tempData = data.readings.map(r => r.temperature);
+                const humidData = data.readings.map(r => r.humidity);
+
+                if (chartInstance.current) {
+                    chartInstance.current.data.labels = labels;
+                    chartInstance.current.data.datasets[0].data = tempData;
+                    chartInstance.current.data.datasets[1].data = humidData;
+                    chartInstance.current.update('none'); // Update without animation for smoother real-time feel
+                    return;
+                }
+
+                chartInstance.current = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Temperature (°C)',
+                                data: tempData,
+                                borderColor: '#ef4444',
+                                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                                tension: 0.3,
+                                fill: true
+                            },
+                            {
+                                label: 'Humidity (%)',
+                                data: humidData,
+                                borderColor: '#10b981',
+                                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                tension: 0.3,
+                                fill: true
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { 
+                            legend: { position: 'top' },
+                            title: { display: true, text: 'Environmental Data' }
+                        },
+                        scales: { y: { beginAtZero: true } },
+                        animation: { duration: 400 }
+                    }
+                });
+            };
+
+            const renderVirChart = () => {
+                const ctx = virChartRef.current.getContext('2d');
+                const labels = data.readings.map(r => r.reading_time.split(' ')[1]);
+                const voltData = data.readings.map(r => r.voltage);
+                const currData = data.readings.map(r => r.current);
+                const resData = data.readings.map(r => r.resistance);
+
+                if (virChartInstance.current) {
+                    virChartInstance.current.data.labels = labels;
+                    virChartInstance.current.data.datasets[0].data = voltData;
+                    virChartInstance.current.data.datasets[1].data = currData;
+                    virChartInstance.current.data.datasets[2].data = resData;
+                    virChartInstance.current.update('none');
+                    return;
+                }
+                
+                virChartInstance.current = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Voltage (V)',
+                                data: voltData,
+                                borderColor: '#f59e0b',
+                                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                                tension: 0.3,
+                                fill: true
+                            },
+                            {
+                                label: 'Current (A)',
+                                data: currData,
+                                borderColor: '#8b5cf6',
+                                backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                                tension: 0.3,
+                                fill: true
+                            },
+                            {
+                                label: 'Resistance (Ω)',
+                                data: resData,
+                                borderColor: '#3b82f6',
+                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                tension: 0.3,
+                                fill: true
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { 
+                            legend: { position: 'top' },
+                            title: { display: true, text: 'Electrical Monitoring (Ohm\'s Law)' }
+                        },
+                        scales: { y: { beginAtZero: true } },
+                        animation: { duration: 400 }
+                    }
+                });
+            };
+
+            if (loading && !data.latest) {
+                return <div className="flex items-center justify-center h-screen text-xl font-semibold">Loading dashboard...</div>;
+            }
+
+            return (
+                <div className="container mx-auto px-4 py-8 max-w-7xl">
+                    <header className="flex justify-between items-center mb-8 bg-white p-6 rounded-xl shadow-lg border-b-4 border-blue-500">
+                        <div>
+                            <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">Sensor Dashboard</h1>
+                            <div className="flex items-center gap-2">
+                                <p className="text-blue-600 font-medium">React + Python + JSON Database</p>
+                                {lastUpdated && <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full border border-gray-200">Last updated: {lastUpdated}</span>}
+                            </div>
+                        </div>
+                        <div className="flex gap-4">
+                            <button onClick={fetchData} className="bg-blue-500 hover:bg-blue-600 text-white font-bold px-6 py-2 rounded-lg transition-all shadow-md transform hover:scale-105">
+                                Refresh
+                            </button>
+                            <button onClick={deleteData} className="bg-red-500 hover:bg-red-600 text-white font-bold px-6 py-2 rounded-lg transition-all shadow-md transform hover:scale-105">
+                                Clear Data
+                            </button>
+                        </div>
+                    </header>
+
+                    {error && (
+                        <div className="bg-red-50 border-l-8 border-red-500 text-red-700 p-6 mb-8 rounded-lg shadow-md" role="alert">
+                            <p className="font-bold text-lg">Connection Error</p>
+                            <p>{error}</p>
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6 mb-8">
+                        <StatCard title="Temperature" value={data.latest?.temperature} unit="°C" color="text-red-500" icon="🌡️" />
+                        <StatCard title="Humidity" value={data.latest?.humidity} unit="%" color="text-green-500" icon="💧" />
+                        <StatCard title="Light" value={data.latest?.light} unit="lx" color="text-yellow-500" icon="☀️" />
+                        <StatCard title="Voltage" value={data.latest?.voltage} unit="V" color="text-orange-500" icon="⚡" />
+                        <StatCard title="Current" value={data.latest?.current} unit="A" color="text-purple-500" icon="🔌" />
+                        <StatCard title="Resistance" value={data.latest?.resistance} unit="Ω" color="text-blue-500" icon="⚖️" />
+                    </div>
+
+                    {data.readings.length === 0 && !loading && !error && (
+                        <div className="bg-blue-50 border-l-8 border-blue-500 text-blue-700 p-6 mb-8 rounded-lg shadow-md text-center">
+                            <p className="font-bold text-lg">No Data Available</p>
+                            <p>Waiting for sensor data from ESP32... Make sure your ESP32 is sending data to {window.location.hostname}:5000</p>
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                        <div className="bg-white p-6 rounded-2xl shadow-xl">
+                            <h2 className="text-xl font-bold mb-6 text-gray-800 flex items-center gap-2">
+                                <span className="p-2 bg-red-100 rounded-lg">📊</span> Environmental Trends
+                            </h2>
+                            <div className="chart-container h-[400px]">
+                                <canvas ref={chartRef}></canvas>
+                            </div>
+                        </div>
+                        <div className="bg-white p-6 rounded-2xl shadow-xl">
+                            <h2 className="text-xl font-bold mb-6 text-gray-800 flex items-center gap-2">
+                                <span className="p-2 bg-yellow-100 rounded-lg">📈</span> V=IR Graph (Electrical)
+                            </h2>
+                            <div className="chart-container h-[400px]">
+                                <canvas ref={virChartRef}></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-100">
+                        <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+                            <h3 className="text-lg font-bold text-gray-700">Detailed Sensor History</h3>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-widest">Time</th>
+                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-widest text-red-500">Temp</th>
+                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-widest text-green-500">Humid</th>
+                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-widest text-yellow-600">Light</th>
+                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-widest text-orange-500">Volt</th>
+                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-widest text-purple-500">Curr</th>
+                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-widest text-blue-500">Resist</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-100">
+                                    {[...data.readings].reverse().map((r, i) => (
+                                        <tr key={i} className="hover:bg-blue-50 transition-colors">
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{r.reading_time}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-red-600">{r.temperature}°C</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600">{r.humidity}%</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-yellow-600">{r.light} lx</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-orange-600">{r.voltage} V</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-purple-600">{r.current} A</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-blue-600">{r.resistance} Ω</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const StatCard = ({ title, value, unit, color, icon }) => (
+            <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100 transition-all hover:shadow-2xl hover:-translate-y-1">
+                <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">{title}</p>
+                    <span className="text-2xl">{icon}</span>
+                </div>
+                <p className={`text-3xl font-black ${color}`}>
+                    {value !== undefined && value !== null ? `${value}${unit}` : '--'}
+                </p>
+            </div>
+        );
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
