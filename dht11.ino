@@ -22,8 +22,8 @@ int _moisture, sensor_analog;
 const int sensor_pin = 34;  // Soil moisture sensor O/P pin
 
 // WiFi credentials
-const char* ssid = "ABHISHEK FarmCS";
-const char* password = "123456789";
+const char* ssid = "S";
+const char* password = "";
 
 // Your local server address
 const char* serverName = "http://192.168.1.4/dht11/test_data.php";
