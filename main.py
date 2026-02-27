@@ -8,8 +8,8 @@ import random
 import gc
 
 # --- CONFIGURATION ---
-WIFI_SSID = "ABHISHEK FarmCS"
-WIFI_PASS = "123456789"
+WIFI_SSID = "ssid"
+WIFI_PASS = "yourpass"
 # Replace with your computer's IP address
 SERVER_URL = "http://192.168.0.101:5000/api/add" 
 
